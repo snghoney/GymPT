@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Pose Estimation</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils"></script>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background: #333;
+        }
+        #container {
+            display: flex;
+            justify-content: space-around;
+            align-items: center;
+            width: 100%;
+        }
+        video, canvas {
+            width: 48%;
+            border: 2px solid black;
+        }
+        #console {
+            width: 80%;
+            height: 100px;
+            border: 1px solid #000;
+            margin-top: 20px;
+            overflow-y: scroll;
+            background: #333;
+            color: #ffffff;
+            font-size: 16px;
+            padding: 5px;
+        }
+        .sidebar {
+            width: 80px;
+            background-color: #222;
+            position: fixed;
+            right: 0;
+            top: 0;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-around;
+            align-items: center;
+            padding: 20px 0;
+        }
+        .icon {
+            width: 50px;
+            height: 50px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            border-radius: 0%;
+        }
+        .button-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .start-button, .stop-button {
+            margin-top: 10px;
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+        }
+        .stop-button {
+            background-color: #f44336;
+        }
+        .controls {
+            display: flex;
+            align-items: center;
+            margin-top: 10px;
+        }
+
+        #timer {
+            font-size: 24px;
+            color: white;
+            margin-left: 20px;
+        }
+
+        .reset-button {
+            margin-left: 10px;
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            background-color: #f44336;
+            color: white;
+            border: none;
+            border-radius: 5px;
+        }
+
+    </style>
+</head>
+<body>
+    <div class="button-container">
+        <h1>덤벨 숄더 프레스</h1>
+        <div class="controls">
+            <button class="start-button" id="startButton">시작</button>
+            <button class="reset-button" id="resetButton">초기화</button>
+            <div id="timer">00:00.000</div>
+        </div>
+    </div>    
+    <div id="container">
+        <video id="video" width="640" height="480" autoplay></video>
+        <canvas id="canvas" width="640" height="480"></canvas>
+    </div>
+    <div id="console">
+        <div id="countDisplay">Count: 0</div>
+        <div id="balanceDisplay">Balance status will appear here.</div>
+        <div id="forearmStatusDisplay">Forearm status will appear here.</div>
+    </div>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            const videoElement = document.getElementById('video');
+            const canvasElement = document.getElementById('canvas');
+            const canvasCtx = canvasElement.getContext('2d');
+            const startButton = document.getElementById('startButton');
+            const resetButton = document.getElementById('resetButton');
+            const timerElement = document.getElementById('timer');
+            let count = 0;
+            let isStarted = false;
+            let timerInterval;
+            let milliseconds = 0;
+            let leftImbalanceCount = 0;
+            let rightImbalanceCount = 0;
+            let left_forearm_innerbody = 0;
+            let left_forearm_outterbody = 0;
+            let right_forearm_innerbody = 0;
+            let right_forearm_outterbody = 0;
+
+            let logData = [];
+            let lastPosition = 'down';
+
+            function startTimer() {
+                timerInterval = setInterval(() => {
+                    milliseconds += 10;
+                    const minutes = Math.floor(milliseconds / 60000);
+                    const seconds = Math.floor((milliseconds % 60000) / 1000);
+                    const displayMilliseconds = milliseconds % 1000;
+                    timerElement.textContent = 
+                        `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}.${displayMilliseconds.toString().padStart(3, '0')}`;
+                }, 10);
+            }
+
+            function stopTimer() {
+                clearInterval(timerInterval);
+            }
+
+            function reset() {
+                stopTimer();
+                count = 0;
+                milliseconds = 0;
+                leftImbalanceCount = 0;
+                rightImbalanceCount = 0;
+                logData = [];
+                timerElement.textContent = '00:00.000';
+                document.getElementById('countDisplay').textContent = 'Count: 0';
+                document.getElementById('balanceDisplay').textContent = 'Balance status will appear here.';
+                document.getElementById('forearmStatusDisplay').textContent = 'Forearm status will appear here.';
+            }
+
+            async function saveData() {
+                const data = {
+                    count: count,
+                    left_forearm_innerbody: left_forearm_innerbody,
+                    left_forearm_outterbody: left_forearm_outterbody,
+                    right_forearm_innerbody: right_forearm_innerbody,
+                    right_forearm_outterbody: right_forearm_outterbody
+                };
+                
+                const response = await fetch('/save_exercise_data', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(data)
+                });
+
+                const result = await response.json();
+                if (response.ok) {
+                    console.log('Data saved successfully:', result);
+                } else {
+                    console.error('Error saving data:', result.error);
+                }
+            }
+
+            async function setupCamera() {
+                if (navigator.mediaDevices.getUserMedia) {
+                    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                    videoElement.srcObject = stream;
+                    await new Promise((resolve) => {
+                        videoElement.onloadedmetadata = () => {
+                            resolve();
+                        };
+                    });
+                }
+            }
+
+            async function loadAndPredict() {
+                const pose = new Pose({
+                    locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+                });
+
+                pose.setOptions({
+                    modelComplexity: 1,
+                    smoothLandmarks: true,
+                    enableSegmentation: true,
+                    smoothSegmentation: true,
+                    minDetectionConfidence: 0.5,
+                    minTrackingConfidence: 0.5
+                });
+
+                pose.onResults(onResults);
+
+                await setupCamera();
+                videoElement.play();
+
+                function calculateDistance(p1, p2) {
+                    return Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
+                }
+
+                function calculateAngle(A, B, C) {
+                    let AB = Math.sqrt(Math.pow(B.x - A.x, 2) + Math.pow(B.y - A.y, 2));    
+                    let BC = Math.sqrt(Math.pow(B.x - C.x, 2) + Math.pow(B.y - C.y, 2)); 
+                    let AC = Math.sqrt(Math.pow(C.x - A.x, 2) + Math.pow(C.y - A.y, 2));
+                    return Math.acos((BC * BC + AB * AB - AC * AC) / (2 * BC * AB));
+                }
+
+                function onResults(results) {
+                    if (!isStarted) return;
+
+                    canvasCtx.save();
+                    canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+                    canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+                    if (results.poseLandmarks) {
+                        drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4});
+                        drawLandmarks(canvasCtx, results.poseLandmarks, {color: '#FF0000', radius: 5});
+
+                        const leftDistance = calculateDistance(results.poseLandmarks[11], results.poseLandmarks[15]);
+                        const rightDistance = calculateDistance(results.poseLandmarks[12], results.poseLandmarks[16]);
+
+                        const shoulder = results.poseLandmarks[POSE_LANDMARKS.LEFT_SHOULDER];
+                        const elbow = results.poseLandmarks[POSE_LANDMARKS.LEFT_ELBOW];
+                        const wrist = results.poseLandmarks[POSE_LANDMARKS.LEFT_WRIST];
+                        const angle = calculateAngle(shoulder, elbow, wrist);
+
+                        const leftForearmLength = calculateDistance(results.poseLandmarks[13], results.poseLandmarks[15]);
+                        const rightForearmLength = calculateDistance(results.poseLandmarks[14], results.poseLandmarks[16]);
+
+                        const lowerThreshold = 0.4;
+                        const upperThreshold = 0.6;
+
+                        if (angle < Math.PI * 0.46) {
+                            if (lastPosition === 'down') {
+                                count++;
+                            }
+                            lastPosition = 'up';
+                        } else if (angle > Math.PI * 0.80) {
+                            lastPosition = 'down';
+                        }
+
+                        const countDisplay = document.getElementById('countDisplay');
+                        countDisplay.textContent = 'Count: ' + count;
+
+                        const balanceDisplay = document.getElementById('balanceDisplay');
+                        const imbalance = leftDistance - rightDistance;
+                        if (Math.abs(imbalance) < 0.1) {
+                            balanceDisplay.textContent = '균형이 잘 맞습니다.';
+                        } else {
+                            balanceDisplay.textContent = `불균형입니다. ${imbalance > 0 ? '왼쪽' : '오른쪽'}으로 ${Math.abs(imbalance).toFixed(2)}만큼 불균형입니다.`;
+                            if (imbalance > 0) {
+                                leftImbalanceCount++;
+                            } else {
+                                rightImbalanceCount++;
+                            }
+                        }
+
+                        if (leftForearmLength < lowerThreshold) {
+                                left_forearm_innerbody++;
+                        } else if (leftForearmLength > upperThreshold) {
+                            left_forearm_outterbody++;
+                        }
+
+                        if (rightForearmLength < lowerThreshold) {
+                            right_forearm_innerbody++;
+                        } else if (rightForearmLength > upperThreshold) {
+                            right_forearm_outterbody++;
+                        }
+
+                        const forearmStatusDisplay = document.getElementById('forearmStatusDisplay');
+                        if (leftForearmLength >= lowerThreshold && leftForearmLength <= upperThreshold && 
+                            rightForearmLength >= lowerThreshold && rightForearmLength <= upperThreshold) {
+                            forearmStatusDisplay.textContent = "전완근이 중립 상태입니다.";
+                        } else {
+                            if (leftForearmLength < lowerThreshold) {
+                                forearmStatusDisplay.textContent = "왼쪽 전완근이 몸쪽으로 기울어졌습니다. 중립을 유지하세요.";
+                            } else if (leftForearmLength > upperThreshold) {
+                                forearmStatusDisplay.textContent = "왼쪽 전완근이 바깥쪽으로 기울어졌습니다. 중립을 유지하세요.";
+                            }
+
+                            if (rightForearmLength < lowerThreshold) {
+                                forearmStatusDisplay.textContent = "오른쪽 전완근이 몸쪽으로 기울어졌습니다. 중립을 유지하세요.";
+                            } else if (rightForearmLength > upperThreshold) {
+                                forearmStatusDisplay.textContent = "오른쪽 전완근이 바깥쪽으로 기울어졌습니다. 중립을 유지하세요.";
+                            }
+                        }
+                        // Log data for imbalance
+                        logData.push({
+                            time: milliseconds,
+                            leftDistance,
+                            rightDistance,
+                            imbalance: imbalance.toFixed(2)
+                        });
+                        console.log(logData);
+                    }
+                    canvasCtx.restore();
+                }
+
+                setInterval(() => {
+                    pose.send({image: videoElement});
+                }, 100);
+            }
+
+            startButton.addEventListener('click', () => {
+                if (!isStarted) {
+                    isStarted = true;
+                    startButton.textContent = '그만';
+                    startButton.className = 'stop-button';
+                    startTimer();
+                    loadAndPredict();
+                } else {
+                    isStarted = false;
+                    stopTimer();
+                    saveData();
+                    startButton.textContent = '시작';
+                    startButton.className = 'start-button';
+                }
+            });
+
+            resetButton.addEventListener('click', () => {
+                isStarted = false;
+                reset();
+                startButton.textContent = '시작';
+                startButton.className = 'start-button';
+            });
+        });
+        
+    </script>
+    <div class="sidebar">
+        <div>
+            <a href="{{ url_for('rank') }}" style="text-decoration: none; color: white;">
+                <div class="icon">
+                    <img src="{{ url_for('static', filename='images/rank.png') }}" alt="순위 아이콘" style="width: 100%; height: auto;">
+                </div>
+            </a>
+        </div>
+        <div>
+            <a href="{{ url_for('anal') }}" style="text-decoration: none; color: white;">
+                <div class="icon">
+                    <img src="{{ url_for('static', filename='images/anal.png') }}" alt="분석 아이콘" style="width: 100%; height: auto;">
+                </div>
+            </a>
+        </div>
+        <div>
+            <a href="{{ url_for('select') }}" style="text-decoration: none; color: white;">
+                <div class="icon">
+                    <img src="{{ url_for('static', filename='images/exer_s.png') }}" alt="운동 아이콘" style="width: 100%; height: auto;">
+                </div>
+            </a>
+        </div>
+    </div>
+</body>
+</html>
